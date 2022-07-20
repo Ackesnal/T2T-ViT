@@ -108,14 +108,14 @@ class T2T_ViT(nn.Module):
                  drop_path_rate=0., norm_layer=nn.LayerNorm, token_dim=64):
         super().__init__()
         self.num_classes = num_classes
-        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.num_features = self.embed_dim = embed_dim * 2  # num_features for consistency with other models
 
         self.tokens_to_token = T2T_module(
-                img_size=img_size, tokens_type=tokens_type, in_chans=in_chans, embed_dim=embed_dim, token_dim=token_dim)
+                img_size=img_size, tokens_type=tokens_type, in_chans=in_chans, embed_dim=embed_dim * 2, token_dim=token_dim)
         num_patches = self.tokens_to_token.num_patches
 
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pos_embed = nn.Parameter(data=get_sinusoid_encoding(n_position=num_patches + 1, d_hid=embed_dim), requires_grad=False)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim * 2))
+        self.pos_embed = nn.Parameter(data=get_sinusoid_encoding(n_position=num_patches + 1, d_hid=embed_dim * 2), requires_grad=False)
         self.pos_drop = nn.Dropout(p=drop_rate)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
@@ -124,10 +124,10 @@ class T2T_ViT(nn.Module):
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
             for i in range(depth)])
-        self.norm = norm_layer(embed_dim)
+        self.norm = norm_layer(embed_dim * 2)
 
         # Classifier head
-        self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        self.head = nn.Linear(embed_dim * 2, num_classes) if num_classes > 0 else nn.Identity()
 
         trunc_normal_(self.cls_token, std=.02)
         self.apply(self._init_weights)
@@ -153,16 +153,18 @@ class T2T_ViT(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def forward_features(self, x):
-        B = x.shape[0]
         x = self.tokens_to_token(x)
-
+        B = x.shape[0]
+        C = x.shape[2]
+        
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
 
         for blk in self.blocks:
-            x = blk(x)
+            x[:,:,:C//2] = blk(x[:,:,:C//2]) * 0.5
+            x = x.reshape(B,-1,2,C//2).transpose(-1,-2).reshape(B,-1,C)
 
         x = self.norm(x)
         return x[:, 0]
